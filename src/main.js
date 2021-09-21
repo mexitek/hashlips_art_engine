@@ -1,6 +1,8 @@
 const fs = require("fs");
 const path = require("path");
 const sha1 = require("sha1");
+const GIFEncoder = require("gif-encoder-2");
+var gifFrames = require("gif-frames");
 const { createCanvas, loadImage } = require("canvas");
 const isLocal = typeof process.pkg === "undefined";
 const basePath = isLocal ? process.cwd() : path.dirname(process.execPath);
@@ -42,6 +44,11 @@ const getRarityWeight = (_str) => {
   return nameWithoutWeight;
 };
 
+const isAnimated = (filename) => {
+  // Find a better way to know if its an animated file
+  return /\.gif$/gi.test(filename);
+};
+
 const cleanDna = (_str) => {
   var dna = Number(_str.split(":").shift());
   return dna;
@@ -64,6 +71,7 @@ const getElements = (path) => {
         filename: i,
         path: `${path}${i}`,
         weight: getRarityWeight(i),
+        isAnimated: isAnimated(i),
       };
     });
 };
@@ -80,11 +88,70 @@ const layersSetup = (layersOrder) => {
   return layers;
 };
 
-const saveImage = (_editionCount) => {
+const saveImage = async (_editionCount, layers, isAnimated) => {
+  if (!isAnimated) {
+    fs.writeFileSync(
+      `${buildDir}/images/${_editionCount}.png`,
+      canvas.toBuffer("image/png")
+    );
+    return;
+  }
+
+  // This NFT will be animated, begin GIF creation
+  const encoder = new GIFEncoder(format.width, format.height);
+  const animatedLayer = layers.filter((l) => l.isAnimated)[0];
+  const frames = animatedLayer.loadedImage;
+  const currentImagePath = `${buildDir}/images/${_editionCount}-original.png`;
+  fs.writeFileSync(currentImagePath, canvas.toBuffer("image/png"));
+  const currentImage = await loadImage(currentImagePath);
+
+  console.log("Creating a GIF NFT.");
+  // return;
+  encoder.start();
+
+  for (let i = 0; i < frames.length; i++) {
+    const frame = frames[i];
+    const frameBuffer = await streamToBuffer(frame.getImage());
+    const newFramePath = `${buildDir}/images/${_editionCount}-${frame.frameIndex}.png`;
+    const newCanvas = createCanvas(format.width, format.height);
+    const newCtx = newCanvas.getContext("2d");
+    fs.writeFileSync(newFramePath, frameBuffer);
+    const frameImage = await loadImage(newFramePath);
+
+    newCtx.quality = "best";
+    newCtx.globalAlpha = "1";
+    newCtx.globalCompositeOperation = "source-over";
+    // encoder.setDelay(frame.frameInfo.delay);
+    encoder.setDelay(1);
+    newCtx.drawImage(currentImage, 0, 0, format.width, format.height);
+    newCtx.drawImage(frameImage, 0, 0, format.width, format.height);
+    encoder.addFrame(newCtx);
+    fs.unlinkSync(newFramePath);
+  }
+  encoder.finish();
+
+  fs.unlinkSync(currentImagePath);
   fs.writeFileSync(
-    `${buildDir}/images/${_editionCount}.png`,
-    canvas.toBuffer("image/png")
+    `${buildDir}/images/${_editionCount}.gif`,
+    encoder.out.getData()
   );
+};
+const streamToBuffer = async (stream) => {
+  return new Promise((resolve, reject) => {
+    const data = [];
+
+    stream.on("data", (chunk) => {
+      data.push(chunk);
+    });
+
+    stream.on("end", () => {
+      resolve(Buffer.concat(data));
+    });
+
+    stream.on("error", (err) => {
+      reject(err);
+    });
+  });
 };
 
 const genColor = () => {
@@ -124,15 +191,27 @@ const addAttributes = (_element) => {
 
 const loadLayerImg = async (_layer) => {
   return new Promise(async (resolve) => {
-    const image = await loadImage(`${_layer.selectedElement.path}`);
-    resolve({ layer: _layer, loadedImage: image });
+    let path = _layer.selectedElement.path;
+    resolve({
+      layer: _layer,
+      loadedImage: _layer.isAnimated
+        ? await gifFrames({
+            url: path,
+            frames: "all",
+            outputType: "png",
+          })
+        : await loadImage(path),
+      isAnimated: _layer.isAnimated,
+    });
   });
 };
 
 const drawElement = (_renderObject) => {
-  ctx.globalAlpha = _renderObject.layer.opacity;
-  ctx.globalCompositeOperation = _renderObject.layer.blendMode;
-  ctx.drawImage(_renderObject.loadedImage, 0, 0, format.width, format.height);
+  if (!_renderObject.isAnimated) {
+    ctx.globalAlpha = _renderObject.layer.opacity;
+    ctx.globalCompositeOperation = _renderObject.layer.blendMode;
+    ctx.drawImage(_renderObject.loadedImage, 0, 0, format.width, format.height);
+  }
   addAttributes(_renderObject);
 };
 
@@ -146,6 +225,7 @@ const constructLayerToDna = (_dna = [], _layers = []) => {
       blendMode: layer.blendMode,
       opacity: layer.opacity,
       selectedElement: selectedElement,
+      isAnimated: selectedElement.isAnimated,
     };
   });
   return mappedDnaToLayers;
@@ -205,15 +285,17 @@ const startCreating = async () => {
       editionCount <= layerConfigurations[layerConfigIndex].growEditionSizeTo
     ) {
       let newDna = createDna(layers);
+      let isAnimatedNFT = false;
       if (isDnaUnique(dnaList, newDna)) {
         let results = constructLayerToDna(newDna, layers);
         let loadedElements = [];
 
         results.forEach((layer) => {
+          isAnimatedNFT = layer.isAnimated || isAnimatedNFT;
           loadedElements.push(loadLayerImg(layer));
         });
 
-        await Promise.all(loadedElements).then((renderObjectArray) => {
+        await Promise.all(loadedElements).then(async (renderObjectArray) => {
           ctx.clearRect(0, 0, format.width, format.height);
           if (background.generate) {
             drawBackground();
@@ -221,7 +303,7 @@ const startCreating = async () => {
           renderObjectArray.forEach((renderObject) => {
             drawElement(renderObject);
           });
-          saveImage(editionCount);
+          await saveImage(editionCount, renderObjectArray, isAnimatedNFT);
           addMetadata(newDna, editionCount);
           saveMetaDataSingleFile(editionCount);
           console.log(
