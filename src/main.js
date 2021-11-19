@@ -107,43 +107,46 @@ const saveImage = async (_editionCount, layers, isAnimated) => {
 
   // This NFT will be animated, begin GIF creation
   const encoder = new GIFEncoder(format.width, format.height);
-  const animatedLayer = layers.filter((l) => l.isAnimated)[0];
-  const frames = animatedLayer.loadedImage;
-  const currentImagePath = `${buildDir}/images/${_editionCount}-original.png`;
-  fs.writeFileSync(currentImagePath, canvas.toBuffer("image/png"));
-  const currentImage = await loadImage(currentImagePath);
+  const animatedLayers = layers.filter((l) => l.isAnimated);
+  for (var layerIndex = 0; layerIndex < animatedLayers.length; layerIndex++) {
+    const frames = animatedLayers[layerIndex].loadedImage;
+    const currentImagePath = `${buildDir}/images/${_editionCount}-original.png`;
+    fs.writeFileSync(currentImagePath, canvas.toBuffer("image/png"));
+    const currentImage = await loadImage(currentImagePath);
 
-  console.log("Creating a GIF NFT.");
-  // return;
-  encoder.start();
+    console.log("Creating a GIF NFT.");
+    // return;
+    encoder.start();
 
-  for (let i = 0; i < frames.length; i++) {
-    const frame = frames[i];
-    const frameBuffer = await streamToBuffer(frame.getImage());
-    const newFramePath = `${buildDir}/images/${_editionCount}-${frame.frameIndex}.png`;
-    const newCanvas = createCanvas(format.width, format.height);
-    const newCtx = newCanvas.getContext("2d");
-    fs.writeFileSync(newFramePath, frameBuffer);
-    const frameImage = await loadImage(newFramePath);
+    for (let i = 0; i < frames.length; i++) {
+      const frame = frames[i];
+      const frameBuffer = await streamToBuffer(frame.getImage());
+      const newFramePath = `${buildDir}/images/${_editionCount}-${frame.frameIndex}.png`;
+      const newCanvas = createCanvas(format.width, format.height);
+      const newCtx = newCanvas.getContext("2d");
+      fs.writeFileSync(newFramePath, frameBuffer);
+      const frameImage = await loadImage(newFramePath);
 
-    newCtx.quality = "best";
-    newCtx.globalAlpha = "1";
-    newCtx.globalCompositeOperation = "source-over";
-    // encoder.setDelay(frame.frameInfo.delay);
-    encoder.setDelay(1);
-    newCtx.drawImage(currentImage, 0, 0, format.width, format.height);
-    newCtx.drawImage(frameImage, 0, 0, format.width, format.height);
-    encoder.addFrame(newCtx);
-    fs.unlinkSync(newFramePath);
+      newCtx.quality = "best";
+      newCtx.globalAlpha = "1";
+      newCtx.globalCompositeOperation = "source-over";
+      // encoder.setDelay(frame.frameInfo.delay);
+      encoder.setDelay(1);
+      newCtx.drawImage(currentImage, 0, 0, format.width, format.height);
+      newCtx.drawImage(frameImage, 0, 0, format.width, format.height);
+      encoder.addFrame(newCtx);
+      fs.unlinkSync(newFramePath);
+    }
+    encoder.finish();
+
+    fs.writeFileSync(
+      `${buildDir}/images/${_editionCount}.gif`,
+      encoder.out.getData()
+    );
   }
-  encoder.finish();
-
   fs.unlinkSync(currentImagePath);
-  fs.writeFileSync(
-    `${buildDir}/images/${_editionCount}.gif`,
-    encoder.out.getData()
-  );
 };
+
 const streamToBuffer = async (stream) => {
   return new Promise((resolve, reject) => {
     const data = [];
@@ -208,6 +211,7 @@ const loadLayerImg = async (_layer) => {
             url: path,
             frames: "all",
             outputType: "png",
+            cumulative: "true",
           })
         : await loadImage(path),
       isAnimated: _layer.isAnimated,
